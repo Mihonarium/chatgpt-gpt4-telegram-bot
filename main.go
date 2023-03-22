@@ -11,6 +11,7 @@ import (
 
 	"github.com/PullRequestInc/go-gpt3"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	tokenizer "github.com/samber/go-gpt-3-encoder"
 )
 
 const (
@@ -25,13 +26,15 @@ var config Config
 
 // Store conversation history per user
 var conversationHistory = make(map[int64][]gpt3.ChatCompletionRequestMessage)
-var userSettingsMap = make(map[int64]UserSettings)
+var userSettingsMap = make(map[int64]User)
 var mu = &sync.Mutex{}
 
-type UserSettings struct {
-	Model        string
-	SystemPrompt string
-	State        string
+type User struct {
+	Model                string
+	SystemPrompt         string
+	State                string
+	CurrentContext       *context.CancelFunc
+	CurrentMessageBuffer string
 }
 
 type Config struct {
@@ -42,7 +45,7 @@ type Config struct {
 
 func ReadConfig() (Config, error) {
 	var config Config
-	configFile, err := os.Open("config.yml")
+	configFile, err := os.Open("gpt4_bot_config.yml")
 	if err != nil {
 		return config, err
 	}
@@ -126,7 +129,7 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 	mu.Unlock()
 	if state == StateWaitingForSystemPrompt {
 		mu.Lock()
-		userSettingsMap[update.Message.Chat.ID] = UserSettings{
+		userSettingsMap[update.Message.Chat.ID] = User{
 			Model:        model,
 			SystemPrompt: update.Message.Text,
 			State:        StateDefault,
@@ -136,7 +139,7 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 		bot.Send(msg)
 		return
 	}
-	generatedText, err := generateTextWithGPT(client, update.Message.Text, update.Message.Chat.ID, model)
+	/*generatedText, err := generateTextWithGPT(client, update.Message.Text, update.Message.Chat.ID, model)
 	if err != nil {
 		log.Printf("Failed to generate text with GPT: %v", err)
 		return
@@ -148,7 +151,57 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 	_, err = bot.Send(msg)
 	if err != nil {
 		log.Printf("Failed to send message: %v", err)
+	}*/
+	generatedTextStream, err := generateTextStreamWithGPT(client, update.Message.Text, update.Message.Chat.ID, model)
+	if err != nil {
+		log.Printf("Failed to generate text stream with GPT: %v", err)
+		return
 	}
+	text := ""
+	messageID := 0
+	for generatedText := range generatedTextStream {
+		if strings.TrimSpace(generatedText) == "" {
+			continue
+		}
+		if text == "" {
+			// Send the first message
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, generatedText+"...")
+			msg.ReplyToMessageID = update.Message.MessageID
+			msg_, err := bot.Send(msg)
+			if err != nil {
+				log.Printf("Failed to send message: %v", err)
+			}
+			messageID = msg_.MessageID
+			fmt.Println("Message ID: ", msg_.MessageID)
+			text += generatedText
+			continue
+		}
+		text += generatedText
+		// if the length of the text is too long, send a new message
+		if len(text) > 4096 {
+			text = generatedText
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, text)
+			msg.ReplyToMessageID = messageID
+			msg_, err := bot.Send(msg)
+			if err != nil {
+				log.Printf("Failed to send message: %v", err)
+			}
+			messageID = msg_.MessageID
+			continue
+		}
+		// Edit the message
+		msg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, messageID, text+"...")
+		_, err := bot.Send(msg)
+		if err != nil {
+			log.Printf("Failed to edit message: %v", err)
+		}
+	}
+	msg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, messageID, text)
+	_, err = bot.Send(msg)
+	if err != nil {
+		log.Printf("Failed to edit message: %v", err)
+	}
+	CompleteResponse(update.Message.Chat.ID)
 }
 
 func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Client) {
@@ -164,7 +217,7 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 				Content: DefaultSystemPrompt,
 			},
 		}
-		userSettingsMap[update.Message.Chat.ID] = UserSettings{
+		userSettingsMap[update.Message.Chat.ID] = User{
 			Model:        DefaultModel,
 			SystemPrompt: DefaultSystemPrompt,
 		}
@@ -181,11 +234,11 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 			},
 		}
 		mu.Unlock()
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, ".")
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Conversation history cleared.")
 		bot.Send(msg)
 	case "gpt4":
 		mu.Lock()
-		userSettingsMap[update.Message.Chat.ID] = UserSettings{
+		userSettingsMap[update.Message.Chat.ID] = User{
 			Model: GPT4Model,
 		}
 		mu.Unlock()
@@ -193,7 +246,7 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 		bot.Send(msg)
 	case "gpt35":
 		mu.Lock()
-		userSettingsMap[update.Message.Chat.ID] = UserSettings{
+		userSettingsMap[update.Message.Chat.ID] = User{
 			Model: GPT35TurboModel,
 		}
 		mu.Unlock()
@@ -217,10 +270,17 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, generatedText)
 		msg.ReplyToMessageID = update.Message.MessageID
 		bot.Send(msg)
+	case "stop":
+		mu.Lock()
+		user := userSettingsMap[update.Message.Chat.ID]
+		if user.CurrentContext != nil {
+			CompleteResponse(update.Message.Chat.ID)
+		}
+		mu.Unlock()
 	case "system_prompt":
 		if commandArg == "" {
 			mu.Lock()
-			userSettingsMap[update.Message.Chat.ID] = UserSettings{
+			userSettingsMap[update.Message.Chat.ID] = User{
 				Model:        userSettingsMap[update.Message.Chat.ID].Model,
 				SystemPrompt: userSettingsMap[update.Message.Chat.ID].SystemPrompt,
 				State:        StateWaitingForSystemPrompt,
@@ -231,7 +291,7 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 			return
 		}
 		mu.Lock()
-		userSettingsMap[update.Message.Chat.ID] = UserSettings{
+		userSettingsMap[update.Message.Chat.ID] = User{
 			Model:        userSettingsMap[update.Message.Chat.ID].Model,
 			SystemPrompt: commandArg,
 		}
@@ -258,11 +318,33 @@ func generateTextWithGPT(client gpt3.Client, inputText string, chatID int64, mod
 	})
 
 	temp := float32(0.7)
+	maxTokens := 4096
+	if model == GPT4Model {
+		maxTokens = 8192
+	}
+	e, err := tokenizer.NewEncoder()
+	if err != nil {
+		return "", fmt.Errorf("failed to create encoder: %w", err)
+	}
+	totalTokens := 0
+	for _, message := range conversationHistory[chatID] {
+		q, err := e.Encode(message.Content)
+		if err != nil {
+			return "", fmt.Errorf("failed to encode message: %w", err)
+		}
+		totalTokens += len(q)
+		q, err = e.Encode(message.Role)
+		if err != nil {
+			return "", fmt.Errorf("failed to encode message: %w", err)
+		}
+		totalTokens += len(q)
+	}
+	maxTokens -= totalTokens
 	request := gpt3.ChatCompletionRequest{
 		Model:       model,
 		Messages:    conversationHistory[chatID],
 		Temperature: &temp,
-		MaxTokens:   3000,
+		MaxTokens:   maxTokens,
 		TopP:        1,
 	}
 	ctx := context.Background()
@@ -284,4 +366,77 @@ func generateTextWithGPT(client gpt3.Client, inputText string, chatID int64, mod
 	})
 
 	return generatedText, nil
+}
+
+func generateTextStreamWithGPT(client gpt3.Client, inputText string, chatID int64, model string) (chan string, error) {
+	// Add the user's message to the conversation history
+	conversationHistory[chatID] = append(conversationHistory[chatID], gpt3.ChatCompletionRequestMessage{
+		Role:    "user",
+		Content: inputText,
+	})
+
+	temp := float32(0.7)
+	request := gpt3.ChatCompletionRequest{
+		Model:       model,
+		Messages:    conversationHistory[chatID],
+		Temperature: &temp,
+		MaxTokens:   3000,
+		TopP:        1,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	mu.Lock()
+	user := userSettingsMap[chatID]
+	user.CurrentContext = &cancel
+	mu.Unlock()
+	response := make(chan string)
+	// Call the OpenAI API
+	go func() {
+		err := client.ChatCompletionStream(ctx, request, func(completion *gpt3.ChatCompletionStreamResponse) {
+			log.Printf("Received completion: %v\n", completion)
+			response <- completion.Choices[0].Delta.Content
+			mu.Lock()
+			user := userSettingsMap[chatID]
+			user.CurrentMessageBuffer += completion.Choices[0].Delta.Content
+			userSettingsMap[chatID] = user
+			mu.Unlock()
+			if completion.Choices[0].FinishReason != "" {
+				close(response)
+				CompleteResponse(chatID)
+			}
+		})
+		if err != nil {
+			// if response open, close it
+			if _, ok := <-response; ok {
+				response <- "failed to call OpenAI API"
+				close(response)
+			}
+			// return nil, fmt.Errorf("failed to call OpenAI API: %w", err)
+		}
+	}()
+
+	return response, nil
+}
+
+func CompleteResponse(chatID int64) {
+	mu.Lock()
+	user := userSettingsMap[chatID]
+	if user.CurrentContext == nil {
+		mu.Unlock()
+		return
+	}
+	(*user.CurrentContext)()
+	user.CurrentContext = nil
+	generatedText := user.CurrentMessageBuffer
+	user.CurrentMessageBuffer = ""
+	userSettingsMap[chatID] = user
+	mu.Unlock()
+
+	// Get the generated text
+	generatedText = strings.TrimSpace(generatedText)
+
+	// Add the AI's response to the conversation history
+	conversationHistory[chatID] = append(conversationHistory[chatID], gpt3.ChatCompletionRequestMessage{
+		Role:    "assistant",
+		Content: generatedText,
+	})
 }

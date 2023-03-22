@@ -1,0 +1,3 @@
+telegram_token: "YOUR_TELEGRAM_BOT_TOKEN"
+openai_api_key: "YOUR_OPENAI_API_KEY"
+allowed_telegram_usernames: ["username"]

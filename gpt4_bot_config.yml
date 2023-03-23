@@ -1,3 +1,4 @@
 telegram_token: ""
 openai_api_key: ""
-allowed_telegram_usernames: [""]
+allowed_telegram_usernames: ["username"]
+admin_usernames: ["admin username"]

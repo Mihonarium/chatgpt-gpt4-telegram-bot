@@ -22,7 +22,7 @@ const (
 const DefaultModel = GPT35TurboModel
 const DefaultSystemPrompt = "You are a helpful AI assistant."
 
-var config Config
+var config = &Config{}
 
 // Store conversation history per user
 var conversationHistory = make(map[int64][]gpt3.ChatCompletionRequestMessage)
@@ -38,13 +38,26 @@ type User struct {
 }
 
 type Config struct {
-	TelegramToken string   `yaml:"telegram_token"`
-	OpenAIKey     string   `yaml:"openai_api_key"`
-	AllowedUsers  []string `yaml:"allowed_telegram_usernames"`
+	TelegramToken   string   `yaml:"telegram_token"`
+	OpenAIKey       string   `yaml:"openai_api_key"`
+	AllowedUsers    []string `yaml:"allowed_telegram_usernames"`
+	AdminUsers      []string `yaml:"admin_usernames"`
+	AllowedUsersMap sync.Map
+	AdminUsersMap   sync.Map
 }
 
-func ReadConfig() (Config, error) {
-	var config Config
+func (c *Config) IsAllowedUser(username string) bool {
+	_, ok := c.AllowedUsersMap.Load(username)
+	return ok
+}
+
+func (c *Config) IsAdminUser(username string) bool {
+	_, ok := c.AdminUsersMap.Load(username)
+	return ok
+}
+
+func ReadConfig() (*Config, error) {
+	var config = &Config{}
 	configFile, err := os.Open("gpt4_bot_config.yml")
 	if err != nil {
 		return config, err
@@ -53,8 +66,17 @@ func ReadConfig() (Config, error) {
 	decoder := yaml.NewDecoder(configFile)
 	err = decoder.Decode(&config)
 	if err != nil {
-		return config, err
+		return nil, err
 	}
+
+	for _, username := range config.AllowedUsers {
+		config.AllowedUsersMap.Store(username, true)
+	}
+
+	for _, username := range config.AdminUsers {
+		config.AdminUsersMap.Store(username, true)
+	}
+
 	return config, nil
 }
 
@@ -105,17 +127,8 @@ func main() {
 	}
 }
 
-func contains(s []string, e string) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
-}
-
 func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Client) {
-	if !contains(config.AllowedUsers, update.Message.From.UserName) {
+	if !config.IsAllowedUser(update.Message.From.UserName) {
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "You are not allowed to use this bot.")
 		bot.Send(msg)
 		return
@@ -218,6 +231,26 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 	case "help":
 		// Send help message
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpMessage)
+		bot.Send(msg)
+	case "adduser":
+		if !config.IsAdminUser(update.Message.From.UserName) {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "you are not admin user, instruction skipped.")
+			bot.Send(msg)
+			return
+		}
+		newUser := update.Message.Text[len("/adduser "):]
+		config.AllowedUsersMap.Store(newUser, true)
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "temporarily added user: "+newUser)
+		bot.Send(msg)
+	case "deluser":
+		if !config.IsAdminUser(update.Message.From.UserName) {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "you are not admin user, instruction skipped.")
+			bot.Send(msg)
+			return
+		}
+		username := update.Message.Text[len("/deluser "):]
+		config.AllowedUsersMap.Delete(username)
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "temporarily deleted user: "+username)
 		bot.Send(msg)
 	case "start":
 		// Reset the conversation history for the user

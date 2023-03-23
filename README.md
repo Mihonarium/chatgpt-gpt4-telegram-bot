@@ -1,5 +1,7 @@
 # ChatGPT Telegram bot
 
+[Try on Telegram](https://t.me/GeneralPurposeTransformerBot)
+
 ## Setup
 1. Get your [OpenAI API](https://openai.com/api/) key
 

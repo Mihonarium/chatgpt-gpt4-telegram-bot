@@ -92,16 +92,16 @@ func main() {
 
 	// Handle updates
 	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
-		// Check if the message is a command
-		if update.Message.IsCommand() {
-			handleCommand(bot, update, client)
-		} else {
-			handleMessage(bot, update, client)
-		}
+		go func(update tgbotapi.Update) {
+			if update.Message == nil {
+				return
+			}
+			if update.Message.IsCommand() {
+				s.handleCommand(update)
+			} else {
+				s.handleMessage(update)
+			}
+		}(update)
 	}
 }
 

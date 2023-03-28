@@ -99,7 +99,7 @@ func main() {
 			if update.Message.IsCommand() {
 				handleCommand(bot, update, client)
 			} else {
-				handleCommand(bot, update, client)
+				handleMessage(bot, update, client)
 			}
 		}(update)
 	}

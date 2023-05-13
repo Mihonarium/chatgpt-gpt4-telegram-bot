@@ -70,7 +70,7 @@ func main() {
 		log.Fatalf("Failed to read config: %v", err)
 	}
 	// Initialize the OpenAI API client
-	client := gpt3.NewClient(config.OpenAIKey)
+	client := gpt3.NewClient(config.OpenAIKey, gpt3.WithTimeout(time.Hour*30))
 
 	// Initialize the Telegram bot
 	bot, err := tgbotapi.NewBotAPI(config.TelegramToken)

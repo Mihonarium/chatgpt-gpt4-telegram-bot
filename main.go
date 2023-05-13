@@ -204,10 +204,21 @@ func handleMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 	CompleteResponse(update.Message.Chat.ID)
 }
 
+var helpMessage = "Available commands are:\n" +
+	"  /new: Start a new conversation\n" +
+	"  /retry: Regenerate last bot answer in case of any error\n" +
+	"  /gpt4: Switch to model GPT4\n" +
+	"  /gpt35: Switch to GPT-3.5-turbo\n" +
+	"  /system_prompt: Set the system prompt\n"
+
 func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Client) {
 	command := update.Message.Command()
 	commandArg := update.Message.CommandArguments()
 	switch command {
+	case "help":
+		// Send help message
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpMessage)
+		bot.Send(msg)
 	case "start":
 		// Reset the conversation history for the user
 		mu.Lock()
@@ -222,7 +233,7 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, client gpt3.Cli
 			SystemPrompt: DefaultSystemPrompt,
 		}
 		mu.Unlock()
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome to the GPT-4 Telegram bot!")
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome to the GPT-4 Telegram bot!\n"+helpMessage)
 		bot.Send(msg)
 	case "new":
 		// Reset the conversation history for the user

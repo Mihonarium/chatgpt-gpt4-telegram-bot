@@ -1,0 +1,6 @@
+.idea
+*.bak
+*.log
+*.swo
+*.swp
+gpt4_experiments
